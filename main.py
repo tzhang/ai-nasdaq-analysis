@@ -103,12 +103,58 @@ def analyze_valuation(company_data):
         revenue_growth = df['revenue'].pct_change().mean() * 100
         net_income_growth = df['netIncome'].pct_change().mean() * 100
         
-        # 最新财报数据
+        # DCF估值参数
+        wacc = 0.08  # 加权平均资本成本
+        terminal_growth = 0.03  # 永续增长率
+        forecast_years = 3  # 预测年数
+        
+        # 计算自由现金流
+        df['free_cash_flow'] = df['operatingCashFlow'] - df['capitalExpenditure']
+        
+        # 预测未来自由现金流
         latest = df.iloc[0]
+        fcf_growth = df['free_cash_flow'].pct_change().mean()
+        forecast_fcf = [
+            latest['free_cash_flow'] * (1 + fcf_growth) ** (i + 1)
+            for i in range(forecast_years)
+        ]
+        
+        # 计算终值
+        terminal_value = forecast_fcf[-1] * (1 + terminal_growth) / (wacc - terminal_growth)
+        
+        # 折现现金流
+        discounted_cash_flows = [
+            fcf / (1 + wacc) ** (i + 1)
+            for i, fcf in enumerate(forecast_fcf)
+        ]
+        discounted_terminal_value = terminal_value / (1 + wacc) ** forecast_years
+        
+        # 计算企业价值
+        enterprise_value = sum(discounted_cash_flows) + discounted_terminal_value
+        
+        # 计算股权价值
+        equity_value = enterprise_value - latest['totalDebt'] + latest['cashAndCashEquivalents']
+        
+        # 计算每股内在价值
+        shares_outstanding = latest['marketCap'] / latest['price']
+        intrinsic_value = equity_value / shares_outstanding
+        
+        # 最新财报数据
         valuation = {
             'symbol': latest['symbol'],
             'revenue_growth': round(revenue_growth, 2),
             'net_income_growth': round(net_income_growth, 2),
+            'dcf_valuation': {
+                'intrinsic_value': round(intrinsic_value, 2),
+                'enterprise_value': round(enterprise_value, 2),
+                'equity_value': round(equity_value, 2),
+                'wacc': wacc,
+                'terminal_growth': terminal_growth,
+                'forecast_years': forecast_years,
+                'forecast_fcf': [round(fcf, 2) for fcf in forecast_fcf],
+                'discounted_cash_flows': [round(dcf, 2) for dcf in discounted_cash_flows],
+                'discounted_terminal_value': round(discounted_terminal_value, 2)
+            },
             'profitability': {
                 'gross_margin': round(latest['gross_profit_margin'] * 100, 2),
                 'operating_margin': round(latest['operating_margin'] * 100, 2),
@@ -255,28 +301,43 @@ def plot_financials(df, symbol):
                     fontsize=8, ha='center', va='bottom',
                     bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1))
         
-        # 6. 财务健康度
+        # 6. DCF估值分析
         plt.subplot(3, 2, 6)
-        plt.plot(df['date'], df['current_ratio'], 'y-H', label='Current Ratio')
-        plt.plot(df['date'], df['totalLiabilities']/df['totalStockholdersEquity'], 'c-<', label='Debt/Equity')
-        plt.title('Financial Health', fontsize=12, pad=20)
-        plt.xlabel('Date', fontsize=10)
-        plt.ylabel('Ratio', fontsize=10)
+        
+        # 获取DCF估值数据
+        valuation = analyze_valuation(df.to_dict('records'))
+        dcf = valuation['dcf_valuation']
+        
+        # 绘制DCF估值图表
+        years = list(range(1, dcf['forecast_years'] + 1))
+        plt.bar(years, dcf['forecast_fcf'], color='b', alpha=0.6, label='Forecast FCF')
+        plt.plot(years, dcf['discounted_cash_flows'], 'ro-', label='Discounted FCF')
+        plt.axhline(dcf['discounted_terminal_value'], color='g', linestyle='--', 
+                   label=f'Terminal Value\n({dcf['terminal_growth']*100}% growth)')
+        
+        plt.title('DCF Valuation', fontsize=12, pad=20)
+        plt.xlabel('Year', fontsize=10)
+        plt.ylabel('Value (Millions USD)', fontsize=10)
         plt.legend(loc='best', fontsize=8)
         plt.grid(True, linestyle='--', alpha=0.7)
         
-        # 添加财务健康度数据标签
-        for x, y in zip(df['date'], df['current_ratio']):
-            plt.text(x, y, f'{y:.1f}', 
+        # 添加DCF数据标签
+        for x, y in zip(years, dcf['forecast_fcf']):
+            plt.text(x, y, f'${y/1e6:.1f}M', 
                     fontsize=8, ha='center', va='bottom',
                     bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1))
-        for x, y in zip(df['date'], df['totalLiabilities']/df['totalStockholdersEquity']):
-            plt.text(x, y, f'{y:.1f}', 
+        for x, y in zip(years, dcf['discounted_cash_flows']):
+            plt.text(x, y, f'${y/1e6:.1f}M', 
                     fontsize=8, ha='center', va='top',
                     bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1))
+        plt.text(dcf['forecast_years'] + 0.5, dcf['discounted_terminal_value'], 
+                f'${dcf['discounted_terminal_value']/1e6:.1f}M',
+                fontsize=8, ha='left', va='center',
+                bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1))
         
         # 整体布局调整
-        plt.suptitle(f'{symbol} Financial Analysis Report', fontsize=16, y=1.02)
+        plt.suptitle(f'{symbol} Financial Analysis Report\nDCF Intrinsic Value: ${dcf['intrinsic_value']:.2f}', 
+                    fontsize=16, y=1.02)
         plt.tight_layout()
         
         # 保存图表
